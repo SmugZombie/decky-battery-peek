@@ -1,0 +1,11 @@
+{
+  "name": "Battery Peek",
+  "author": "Ron Egli",
+  "flags": ["_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["battery", "overlay", "utility"],
+    "description": "Shows a tiny always-on-top battery percentage pill while you play.",
+    "image": ""
+  }
+}
