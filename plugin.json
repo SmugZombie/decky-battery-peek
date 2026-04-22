@@ -1,7 +1,7 @@
 {
   "name": "decky-battery-peek",
   "author": "Ron Egli",
-  "flags": ["_root"],
+  "flags": [],
   "api_version": 1,
   "publish": {
     "tags": ["battery", "overlay", "utility"],

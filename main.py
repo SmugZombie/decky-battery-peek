@@ -1,27 +1,12 @@
-import asyncio
 import os
-from pathlib import Path
 
 import decky
 
 
-def _find_battery_path() -> Path:
-    base = Path("/sys/class/power_supply")
-    if not base.is_dir():
-        return Path("/sys/class/power_supply/BAT1")
-    for p in sorted(base.glob("BAT*")):
-        t = p / "type"
-        if t.is_file() and t.read_text(encoding="utf-8", errors="replace").strip().lower() == "battery":
-            return p
-    for p in (Path("/sys/class/power_supply/BAT1"), Path("/sys/class/power_supply/BAT0")):
-        if p.is_dir():
-            return p
-    return Path("/sys/class/power_supply/BAT1")
-
-
 class Plugin:
+    """Minimal backend — battery data comes from the Browser Battery API in the frontend."""
+
     async def _main(self):
-        self.loop = asyncio.get_event_loop()
         decky.logger.info("Battery Peek backend loaded")
 
     async def _unload(self):
@@ -29,58 +14,6 @@ class Plugin:
 
     async def _uninstall(self):
         decky.logger.info("Battery Peek backend uninstalled")
-
-    async def get_battery_status(self):
-        """
-        Returns a simple battery snapshot directly from Linux power_supply.
-        This is more reliable on Steam Deck than depending on browser battery APIs.
-        """
-        battery_base = _find_battery_path()
-        try:
-            capacity = self._read_int(battery_base / "capacity", default=0)
-            status = self._read_text(battery_base / "status", default="Unknown")
-            energy_now = self._read_int(battery_base / "energy_now", default=0)
-            energy_full = self._read_int(battery_base / "energy_full", default=0)
-            power_now = self._read_int(battery_base / "power_now", default=0)
-
-            minutes_remaining = None
-            if power_now > 0 and energy_now > 0 and status.lower() == "discharging":
-                hours_remaining = energy_now / power_now
-                minutes_remaining = int(hours_remaining * 60)
-
-            return {
-                "percent": max(0, min(capacity, 100)),
-                "status": status,
-                "isCharging": status.lower() == "charging",
-                "energyNow": energy_now,
-                "energyFull": energy_full,
-                "powerNow": power_now,
-                "minutesRemaining": minutes_remaining,
-            }
-        except Exception as exc:
-            decky.logger.error(f"Failed to read battery status: {exc}")
-            return {
-                "percent": 0,
-                "status": "Unknown",
-                "isCharging": False,
-                "energyNow": 0,
-                "energyFull": 0,
-                "powerNow": 0,
-                "minutesRemaining": None,
-                "error": str(exc),
-            }
-
-    def _read_text(self, path: Path, default: str = "") -> str:
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except Exception:
-            return default
-
-    def _read_int(self, path: Path, default: int = 0) -> int:
-        try:
-            return int(self._read_text(path, str(default)))
-        except Exception:
-            return default
 
     async def _migration(self):
         decky.logger.info("Battery Peek migration check")

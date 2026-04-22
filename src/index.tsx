@@ -6,7 +6,6 @@ import {
   definePlugin,
   staticClasses,
 } from "@decky/ui";
-import { callable } from "@decky/api";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FaBolt } from "react-icons/fa";
 
@@ -21,23 +20,40 @@ type BatteryStatus = {
   error?: string;
 };
 
-const getBatteryStatus = callable<[], BatteryStatus>("get_battery_status");
+type NavigatorWithBattery = Navigator & {
+  getBattery?: () => Promise<{
+    level: number;
+    charging: boolean;
+    chargingTime: number;
+    dischargingTime: number;
+    addEventListener: (type: string, listener: () => void) => void;
+    removeEventListener: (type: string, listener: () => void) => void;
+  }>;
+};
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+/** Avoid `callable()` / `@decky/api` — those bridge calls surface as TypeError "Failed to fetch" when WS flakes. sysfs is unreadable from JS anyway. */
+function batteryMessageFallback(raw: string): string {
+  if (/failed to fetch/i.test(raw)) {
+    return "Battery read blocked in this shell (often a Chromium / Game Mode limitation). Try Desktop Mode or Steam OS Beta updates.";
+  }
+  return raw;
 }
 
-/** Deck UI sometimes flakes on the WS bridge; navigator path avoids sysfs but keeps the overlay usable. */
-async function snapshotFromNavigator(): Promise<BatteryStatus | null> {
-  const nav = navigator as Navigator & {
-    getBattery?: () => Promise<{
-      level: number;
-      charging: boolean;
-      chargingTime: number;
-      dischargingTime: number;
-    }>;
-  };
-  if (!nav.getBattery) return null;
+async function readBattery(): Promise<BatteryStatus> {
+  const nav = navigator as NavigatorWithBattery;
+  if (!nav.getBattery) {
+    return {
+      percent: 0,
+      status: "Unavailable",
+      isCharging: false,
+      energyNow: 0,
+      energyFull: 0,
+      powerNow: 0,
+      minutesRemaining: null,
+      error:
+        "This Steam UI does not expose the Battery API (navigator.getBattery). Percent may not appear here.",
+    };
+  }
   try {
     const bm = await nav.getBattery();
     const percent = Math.max(0, Math.min(100, Math.round(bm.level * 100)));
@@ -55,24 +71,19 @@ async function snapshotFromNavigator(): Promise<BatteryStatus | null> {
       powerNow: 0,
       minutesRemaining,
     };
-  } catch {
-    return null;
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    return {
+      percent: 0,
+      status: "Unknown",
+      isCharging: false,
+      energyNow: 0,
+      energyFull: 0,
+      powerNow: 0,
+      minutesRemaining: null,
+      error: batteryMessageFallback(raw),
+    };
   }
-}
-
-async function getBatterySnapshot(): Promise<BatteryStatus> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      return await getBatteryStatus();
-    } catch (e) {
-      lastError = e;
-      if (attempt < 2) await sleep(250 * (attempt + 1));
-    }
-  }
-  const fromNav = await snapshotFromNavigator();
-  if (fromNav) return fromNav;
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 const OVERLAY_ID = "battery-peek-overlay";
@@ -126,35 +137,24 @@ function useBatteryPoller(enabled: boolean) {
     let timer: number | undefined;
 
     const refresh = async () => {
-      try {
-        const next = await getBatterySnapshot();
-        if (!cancelled) {
-          setStatus(next);
-          setLoading(false);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setStatus({
-            percent: 0,
-            status: "Unknown",
-            isCharging: false,
-            energyNow: 0,
-            energyFull: 0,
-            powerNow: 0,
-            minutesRemaining: null,
-            error: error instanceof Error ? error.message : "Unknown error",
-          });
-          setLoading(false);
-        }
+      const next = await readBattery();
+      if (!cancelled) {
+        setStatus(next);
+        setLoading(false);
       }
     };
 
-    if (enabled) {
-      void refresh();
-      timer = window.setInterval(() => {
-        void refresh();
-      }, 15000);
+    if (!enabled) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
     }
+
+    void refresh();
+    timer = window.setInterval(() => {
+      void refresh();
+    }, 15000);
 
     return () => {
       cancelled = true;
@@ -323,7 +323,7 @@ function Content() {
         ) : null}
         {status?.error ? (
           <PanelSectionRow>
-            <div className={staticClasses.Text}>Backend error: {status.error}</div>
+            <div className={staticClasses.Text}>{status.error}</div>
           </PanelSectionRow>
         ) : null}
       </PanelSection>
