@@ -147,8 +147,20 @@ function useBatteryPoller(enabled) {
     }, [enabled]);
     return { status, loading };
 }
+/** Gamepad UI / game view — plugin panel lives in a different document, so overlays must attach here. */
+function getSteamRootDocument() {
+    var _a;
+    const sp = DFL.findSP();
+    return (_a = sp === null || sp === void 0 ? void 0 : sp.document) !== null && _a !== void 0 ? _a : document;
+}
+function removeOverlayNodes() {
+    var _a, _b, _c;
+    const id = OVERLAY_ID;
+    (_a = document.getElementById(id)) === null || _a === void 0 ? void 0 : _a.remove();
+    const spDoc = (_b = DFL.findSP()) === null || _b === void 0 ? void 0 : _b.document;
+    (_c = spDoc === null || spDoc === void 0 ? void 0 : spDoc.getElementById(id)) === null || _c === void 0 ? void 0 : _c.remove();
+}
 function FloatingBatteryOverlay({ status, settings, }) {
-    const mountRef = SP_REACT.useRef(null);
     const overlayStyle = SP_REACT.useMemo(() => {
         const isLeft = settings.corner === "top-left";
         return {
@@ -156,7 +168,8 @@ function FloatingBatteryOverlay({ status, settings, }) {
             top: "18px",
             left: isLeft ? "18px" : "auto",
             right: isLeft ? "auto" : "18px",
-            zIndex: "999999",
+            /* Stay above Steam layers (modals, chrome) */
+            zIndex: "2147483647",
             pointerEvents: "none",
             display: settings.enabled ? "flex" : "none",
             alignItems: "center",
@@ -181,41 +194,47 @@ function FloatingBatteryOverlay({ status, settings, }) {
         };
     }, [settings]);
     SP_REACT.useEffect(() => {
-        var _a, _b, _c;
-        let host = document.getElementById(OVERLAY_ID);
-        if (!host) {
-            host = document.createElement("div");
-            host.id = OVERLAY_ID;
-            document.body.appendChild(host);
-        }
-        mountRef.current = host;
-        Object.assign(host.style, overlayStyle);
-        host.innerHTML = "";
-        if (!settings.enabled) {
-            host.style.display = "none";
-            return;
-        }
-        host.style.display = "flex";
-        const percent = (_a = status === null || status === void 0 ? void 0 : status.percent) !== null && _a !== void 0 ? _a : 0;
-        const charging = (_b = status === null || status === void 0 ? void 0 : status.isCharging) !== null && _b !== void 0 ? _b : false;
-        const remaining = formatRemaining((_c = status === null || status === void 0 ? void 0 : status.minutesRemaining) !== null && _c !== void 0 ? _c : null);
-        const content = document.createElement("div");
-        content.style.display = "flex";
-        content.style.alignItems = "center";
-        content.style.gap = settings.compactMode ? "6px" : "8px";
-        const icon = document.createElement("span");
-        icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
-        const text = document.createElement("span");
-        text.textContent = settings.showPercent
-            ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
-            : remaining || (charging ? "Charging" : "Battery");
-        content.appendChild(icon);
-        if (settings.showPercent || remaining || charging) {
-            content.appendChild(text);
-        }
-        host.appendChild(content);
-        return () => {
+        const paint = () => {
+            var _a, _b, _c;
+            const targetDoc = getSteamRootDocument();
+            let host = targetDoc.getElementById(OVERLAY_ID);
+            if (!host || host.ownerDocument !== targetDoc) {
+                removeOverlayNodes();
+                host = targetDoc.createElement("div");
+                host.id = OVERLAY_ID;
+                targetDoc.body.appendChild(host);
+            }
+            Object.assign(host.style, overlayStyle);
             host.innerHTML = "";
+            if (!settings.enabled) {
+                host.style.display = "none";
+                return;
+            }
+            host.style.display = "flex";
+            const percent = (_a = status === null || status === void 0 ? void 0 : status.percent) !== null && _a !== void 0 ? _a : 0;
+            const charging = (_b = status === null || status === void 0 ? void 0 : status.isCharging) !== null && _b !== void 0 ? _b : false;
+            const remaining = formatRemaining((_c = status === null || status === void 0 ? void 0 : status.minutesRemaining) !== null && _c !== void 0 ? _c : null);
+            const content = targetDoc.createElement("div");
+            content.style.display = "flex";
+            content.style.alignItems = "center";
+            content.style.gap = settings.compactMode ? "6px" : "8px";
+            const icon = targetDoc.createElement("span");
+            icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
+            const text = targetDoc.createElement("span");
+            text.textContent = settings.showPercent
+                ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
+                : remaining || (charging ? "Charging" : "Battery");
+            content.appendChild(icon);
+            if (settings.showPercent || remaining || charging) {
+                content.appendChild(text);
+            }
+            host.appendChild(content);
+        };
+        paint();
+        /* Re-find Gamepad UI root when Steam attaches it slightly after boot / resume. */
+        const t = window.setInterval(paint, 1500);
+        return () => {
+            window.clearInterval(t);
         };
     }, [overlayStyle, settings, status]);
     return null;
@@ -236,15 +255,14 @@ function Content() {
 var index = definePlugin(() => {
     const content = SP_JSX.jsx(Content, {});
     return {
+        /** Without this, Decky unmounts the plugin when Quick Access closes — no in-game overlay. */
+        alwaysRender: true,
         name: "Battery Peek",
         titleView: (SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx("span", { "aria-hidden": true, style: { fontSize: "1.15em", lineHeight: 1 }, children: "\u26A1" }), SP_JSX.jsx("span", { children: "Battery Peek" })] })),
         content,
         icon: (SP_JSX.jsx("span", { "aria-hidden": true, style: { fontSize: "1.25em", lineHeight: 1 }, children: "\u26A1" })),
         onDismount() {
-            const overlay = document.getElementById(OVERLAY_ID);
-            if (overlay === null || overlay === void 0 ? void 0 : overlay.parentElement) {
-                overlay.parentElement.removeChild(overlay);
-            }
+            removeOverlayNodes();
         },
     };
 });

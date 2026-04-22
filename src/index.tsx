@@ -5,9 +5,10 @@ import {
   PanelSection,
   PanelSectionRow,
   ToggleField,
+  findSP,
   staticClasses,
 } from "@decky/ui";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type BatteryStatus = {
   percent: number;
@@ -165,6 +166,19 @@ function useBatteryPoller(enabled: boolean) {
   return { status, loading };
 }
 
+/** Gamepad UI / game view — plugin panel lives in a different document, so overlays must attach here. */
+function getSteamRootDocument(): Document {
+  const sp = findSP();
+  return sp?.document ?? document;
+}
+
+function removeOverlayNodes() {
+  const id = OVERLAY_ID;
+  document.getElementById(id)?.remove();
+  const spDoc = findSP()?.document;
+  spDoc?.getElementById(id)?.remove();
+}
+
 function FloatingBatteryOverlay({
   status,
   settings,
@@ -172,8 +186,6 @@ function FloatingBatteryOverlay({
   status: BatteryStatus | null;
   settings: Settings;
 }) {
-  const mountRef = useRef<HTMLDivElement | null>(null);
-
   const overlayStyle = useMemo(() => {
     const isLeft = settings.corner === "top-left";
     return {
@@ -181,7 +193,8 @@ function FloatingBatteryOverlay({
       top: "18px",
       left: isLeft ? "18px" : "auto",
       right: isLeft ? "auto" : "18px",
-      zIndex: "999999",
+      /* Stay above Steam layers (modals, chrome) */
+      zIndex: "2147483647",
       pointerEvents: "none",
       display: settings.enabled ? "flex" : "none",
       alignItems: "center",
@@ -207,49 +220,56 @@ function FloatingBatteryOverlay({
   }, [settings]);
 
   useEffect(() => {
-    let host = document.getElementById(OVERLAY_ID) as HTMLDivElement | null;
-    if (!host) {
-      host = document.createElement("div");
-      host.id = OVERLAY_ID;
-      document.body.appendChild(host);
-    }
-    mountRef.current = host;
+    const paint = () => {
+      const targetDoc = getSteamRootDocument();
+      let host = targetDoc.getElementById(OVERLAY_ID) as HTMLDivElement | null;
+      if (!host || host.ownerDocument !== targetDoc) {
+        removeOverlayNodes();
+        host = targetDoc.createElement("div");
+        host.id = OVERLAY_ID;
+        targetDoc.body.appendChild(host);
+      }
 
-    Object.assign(host.style, overlayStyle);
-    host.innerHTML = "";
+      Object.assign(host.style, overlayStyle);
+      host.innerHTML = "";
 
-    if (!settings.enabled) {
-      host.style.display = "none";
-      return;
-    }
+      if (!settings.enabled) {
+        host.style.display = "none";
+        return;
+      }
 
-    host.style.display = "flex";
+      host.style.display = "flex";
 
-    const percent = status?.percent ?? 0;
-    const charging = status?.isCharging ?? false;
-    const remaining = formatRemaining(status?.minutesRemaining ?? null);
+      const percent = status?.percent ?? 0;
+      const charging = status?.isCharging ?? false;
+      const remaining = formatRemaining(status?.minutesRemaining ?? null);
 
-    const content = document.createElement("div");
-    content.style.display = "flex";
-    content.style.alignItems = "center";
-    content.style.gap = settings.compactMode ? "6px" : "8px";
+      const content = targetDoc.createElement("div");
+      content.style.display = "flex";
+      content.style.alignItems = "center";
+      content.style.gap = settings.compactMode ? "6px" : "8px";
 
-    const icon = document.createElement("span");
-    icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
+      const icon = targetDoc.createElement("span");
+      icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
 
-    const text = document.createElement("span");
-    text.textContent = settings.showPercent
-      ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
-      : remaining || (charging ? "Charging" : "Battery");
+      const text = targetDoc.createElement("span");
+      text.textContent = settings.showPercent
+        ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
+        : remaining || (charging ? "Charging" : "Battery");
 
-    content.appendChild(icon);
-    if (settings.showPercent || remaining || charging) {
-      content.appendChild(text);
-    }
-    host.appendChild(content);
+      content.appendChild(icon);
+      if (settings.showPercent || remaining || charging) {
+        content.appendChild(text);
+      }
+      host.appendChild(content);
+    };
+
+    paint();
+    /* Re-find Gamepad UI root when Steam attaches it slightly after boot / resume. */
+    const t = window.setInterval(paint, 1500);
 
     return () => {
-      host!.innerHTML = "";
+      window.clearInterval(t);
     };
   }, [overlayStyle, settings, status]);
 
@@ -335,6 +355,8 @@ export default definePlugin(() => {
   const content = <Content />;
 
   return {
+    /** Without this, Decky unmounts the plugin when Quick Access closes — no in-game overlay. */
+    alwaysRender: true,
     name: "Battery Peek",
     titleView: (
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -351,10 +373,7 @@ export default definePlugin(() => {
       </span>
     ),
     onDismount() {
-      const overlay = document.getElementById(OVERLAY_ID);
-      if (overlay?.parentElement) {
-        overlay.parentElement.removeChild(overlay);
-      }
+      removeOverlayNodes();
     },
   };
 });
