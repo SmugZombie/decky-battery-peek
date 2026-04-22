@@ -4,6 +4,7 @@ import {
   ButtonItem,
   PanelSection,
   PanelSectionRow,
+  Router,
   ToggleField,
   findSP,
   staticClasses,
@@ -175,17 +176,68 @@ function useBatteryPoller(enabled: boolean, refreshSeconds: number) {
   return { status, loading };
 }
 
-/** Gamepad UI / game view — plugin panel lives in a different document, so overlays must attach here. */
-function getSteamRootDocument(): Document {
-  const sp = findSP();
-  return sp?.document ?? document;
+type UnknownRecord = Record<string, unknown>;
+const asRecord = (v: unknown): UnknownRecord | undefined =>
+  v && typeof v === "object" ? (v as UnknownRecord) : undefined;
+
+function docFromUnknown(value: unknown): Document | null {
+  if (!value || typeof value !== "object") return null;
+  const rec = value as UnknownRecord;
+  const fromDirect = rec.document;
+  if (fromDirect && typeof fromDirect === "object" && "createElement" in (fromDirect as UnknownRecord)) {
+    return fromDirect as Document;
+  }
+  const fromWindowDoc = (rec.window as UnknownRecord | undefined)?.document;
+  if (fromWindowDoc && typeof fromWindowDoc === "object" && "createElement" in (fromWindowDoc as UnknownRecord)) {
+    return fromWindowDoc as Document;
+  }
+  const popup = rec.m_popup as UnknownRecord | undefined;
+  const popupDoc = popup?.document;
+  if (popupDoc && typeof popupDoc === "object" && "createElement" in (popupDoc as UnknownRecord)) {
+    return popupDoc as Document;
+  }
+  const popupWinDoc = (popup?.window as UnknownRecord | undefined)?.document;
+  if (popupWinDoc && typeof popupWinDoc === "object" && "createElement" in (popupWinDoc as UnknownRecord)) {
+    return popupWinDoc as Document;
+  }
+  return null;
+}
+
+/** Steam has multiple UI windows/layers. Paint into every plausible document so one survives when QAM closes. */
+function getCandidateSteamDocuments(): Document[] {
+  const docs: Document[] = [];
+  const addDoc = (d: Document | null | undefined) => {
+    if (!d) return;
+    if (!docs.includes(d)) docs.push(d);
+  };
+
+  addDoc(document);
+  addDoc(findSP()?.document);
+
+  const winRec = window as unknown as UnknownRecord;
+  const focused = asRecord(winRec.SteamUIStore);
+  const focusedInst =
+    (focused?.GetFocusedWindowInstance as (() => unknown) | undefined)?.() ?? focused?.m_FocusedWindowInstance;
+  addDoc(docFromUnknown(focusedInst));
+
+  addDoc(docFromUnknown(winRec.GamepadUIMainWindowInstance));
+  const routerRec = Router as unknown as UnknownRecord;
+  const windowStore = asRecord(routerRec.WindowStore);
+  addDoc(docFromUnknown(windowStore));
+  addDoc(docFromUnknown(windowStore?.GamepadUIMainWindowInstance));
+
+  const steamWindows = windowStore?.SteamUIWindows;
+  if (Array.isArray(steamWindows)) {
+    for (const w of steamWindows) addDoc(docFromUnknown(w));
+  }
+
+  return docs;
 }
 
 function removeOverlayNodes() {
-  const id = OVERLAY_ID;
-  document.getElementById(id)?.remove();
-  const spDoc = findSP()?.document;
-  spDoc?.getElementById(id)?.remove();
+  for (const d of getCandidateSteamDocuments()) {
+    d.getElementById(OVERLAY_ID)?.remove();
+  }
 }
 
 function overlayStyleForSettings(settings: Settings): Record<string, string> {
@@ -220,12 +272,9 @@ function overlayStyleForSettings(settings: Settings): Record<string, string> {
   };
 }
 
-/** DOM overlay on the Gamepad UI document — not tied to React (Decky unmounts plugin UI when you leave the plugin or the QAM stack). */
-function paintOverlayInSteamDom(settings: Settings, status: BatteryStatus | null) {
-  const targetDoc = getSteamRootDocument();
+function paintOverlayInDocument(targetDoc: Document, settings: Settings, status: BatteryStatus | null) {
   let host = targetDoc.getElementById(OVERLAY_ID) as HTMLDivElement | null;
-  if (!host || host.ownerDocument !== targetDoc) {
-    removeOverlayNodes();
+  if (!host) {
     host = targetDoc.createElement("div");
     host.id = OVERLAY_ID;
     targetDoc.body.appendChild(host);
@@ -263,6 +312,13 @@ function paintOverlayInSteamDom(settings: Settings, status: BatteryStatus | null
     row.appendChild(text);
   }
   host.appendChild(row);
+}
+
+/** DOM overlay not tied to React (Decky can unmount plugin UI when you leave the plugin/QAM). */
+function paintOverlayInSteamDom(settings: Settings, status: BatteryStatus | null) {
+  for (const targetDoc of getCandidateSteamDocuments()) {
+    paintOverlayInDocument(targetDoc, settings, status);
+  }
 }
 
 type WindowWithBatteryDaemon = Window & {
