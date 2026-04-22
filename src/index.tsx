@@ -8,7 +8,7 @@ import {
   findSP,
   staticClasses,
 } from "@decky/ui";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type BatteryStatus = {
   percent: number;
@@ -95,6 +95,7 @@ const defaultSettings = {
   showPercent: true,
   compactMode: false,
   corner: "top-right" as "top-right" | "top-left",
+  refreshSeconds: 5,
 };
 
 type Settings = typeof defaultSettings;
@@ -129,7 +130,15 @@ function batteryGlyph(percent: number): string {
   return "▱▱▱▱";
 }
 
-function useBatteryPoller(enabled: boolean) {
+const REFRESH_OPTIONS = [1, 2, 5, 10, 15, 30] as const;
+
+function nextRefreshSeconds(current: number): number {
+  const idx = REFRESH_OPTIONS.findIndex((s) => s === current);
+  if (idx < 0) return REFRESH_OPTIONS[0];
+  return REFRESH_OPTIONS[(idx + 1) % REFRESH_OPTIONS.length];
+}
+
+function useBatteryPoller(enabled: boolean, refreshSeconds: number) {
   const [status, setStatus] = useState<BatteryStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -155,13 +164,13 @@ function useBatteryPoller(enabled: boolean) {
     void refresh();
     timer = window.setInterval(() => {
       void refresh();
-    }, 15000);
+    }, Math.max(1000, refreshSeconds * 1000));
 
     return () => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [enabled]);
+  }, [enabled, refreshSeconds]);
 
   return { status, loading };
 }
@@ -179,106 +188,156 @@ function removeOverlayNodes() {
   spDoc?.getElementById(id)?.remove();
 }
 
-function FloatingBatteryOverlay({
-  status,
-  settings,
-}: {
-  status: BatteryStatus | null;
-  settings: Settings;
-}) {
-  const overlayStyle = useMemo(() => {
-    const isLeft = settings.corner === "top-left";
-    return {
-      position: "fixed",
-      top: "18px",
-      left: isLeft ? "18px" : "auto",
-      right: isLeft ? "auto" : "18px",
-      /* Stay above Steam layers (modals, chrome) */
-      zIndex: "2147483647",
-      pointerEvents: "none",
-      display: settings.enabled ? "flex" : "none",
-      alignItems: "center",
-      gap: settings.compactMode ? "6px" : "8px",
-      padding: settings.compactMode ? "3px 8px" : "5px 10px",
-      borderRadius: "999px",
-      background: "rgba(0, 0, 0, 0.52)",
-      color: "#ffffff",
-      border: "1px solid rgba(255,255,255,0.16)",
-      backdropFilter: "blur(10px)",
-      boxShadow: "0 4px 18px rgba(0,0,0,0.35)",
-      fontSize: settings.compactMode ? "12px" : "14px",
-      fontWeight: "700",
-      lineHeight: "1",
-      letterSpacing: "0.02em",
-      opacity: "0.95",
-      userSelect: "none",
-      maxWidth: "35vw",
-      overflow: "hidden",
-      whiteSpace: "nowrap",
-      textOverflow: "ellipsis",
-    } as const;
-  }, [settings]);
+function overlayStyleForSettings(settings: Settings): Record<string, string> {
+  const isLeft = settings.corner === "top-left";
+  return {
+    position: "fixed",
+    top: "18px",
+    left: isLeft ? "18px" : "auto",
+    right: isLeft ? "auto" : "18px",
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    display: settings.enabled ? "flex" : "none",
+    alignItems: "center",
+    gap: settings.compactMode ? "6px" : "8px",
+    padding: settings.compactMode ? "3px 8px" : "5px 10px",
+    borderRadius: "999px",
+    background: "rgba(0, 0, 0, 0.52)",
+    color: "#ffffff",
+    border: "1px solid rgba(255,255,255,0.16)",
+    backdropFilter: "blur(10px)",
+    boxShadow: "0 4px 18px rgba(0,0,0,0.35)",
+    fontSize: settings.compactMode ? "12px" : "14px",
+    fontWeight: "700",
+    lineHeight: "1",
+    letterSpacing: "0.02em",
+    opacity: "0.95",
+    userSelect: "none",
+    maxWidth: "35vw",
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+  };
+}
 
-  useEffect(() => {
-    const paint = () => {
-      const targetDoc = getSteamRootDocument();
-      let host = targetDoc.getElementById(OVERLAY_ID) as HTMLDivElement | null;
-      if (!host || host.ownerDocument !== targetDoc) {
-        removeOverlayNodes();
-        host = targetDoc.createElement("div");
-        host.id = OVERLAY_ID;
-        targetDoc.body.appendChild(host);
-      }
+/** DOM overlay on the Gamepad UI document — not tied to React (Decky unmounts plugin UI when you leave the plugin or the QAM stack). */
+function paintOverlayInSteamDom(settings: Settings, status: BatteryStatus | null) {
+  const targetDoc = getSteamRootDocument();
+  let host = targetDoc.getElementById(OVERLAY_ID) as HTMLDivElement | null;
+  if (!host || host.ownerDocument !== targetDoc) {
+    removeOverlayNodes();
+    host = targetDoc.createElement("div");
+    host.id = OVERLAY_ID;
+    targetDoc.body.appendChild(host);
+  }
 
-      Object.assign(host.style, overlayStyle);
-      host.innerHTML = "";
+  Object.assign(host.style, overlayStyleForSettings(settings));
+  host.innerHTML = "";
 
-      if (!settings.enabled) {
-        host.style.display = "none";
-        return;
-      }
+  if (!settings.enabled) {
+    host.style.display = "none";
+    return;
+  }
 
-      host.style.display = "flex";
+  host.style.display = "flex";
 
-      const percent = status?.percent ?? 0;
-      const charging = status?.isCharging ?? false;
-      const remaining = formatRemaining(status?.minutesRemaining ?? null);
+  const percent = status?.percent ?? 0;
+  const charging = status?.isCharging ?? false;
+  const remaining = formatRemaining(status?.minutesRemaining ?? null);
 
-      const content = targetDoc.createElement("div");
-      content.style.display = "flex";
-      content.style.alignItems = "center";
-      content.style.gap = settings.compactMode ? "6px" : "8px";
+  const row = targetDoc.createElement("div");
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.gap = settings.compactMode ? "6px" : "8px";
 
-      const icon = targetDoc.createElement("span");
-      icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
+  const icon = targetDoc.createElement("span");
+  icon.textContent = charging ? `⚡ ${batteryGlyph(percent)}` : batteryGlyph(percent);
 
-      const text = targetDoc.createElement("span");
-      text.textContent = settings.showPercent
-        ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
-        : remaining || (charging ? "Charging" : "Battery");
+  const text = targetDoc.createElement("span");
+  text.textContent = settings.showPercent
+    ? `${percent}%${remaining ? ` · ${remaining}` : ""}`
+    : remaining || (charging ? "Charging" : "Battery");
 
-      content.appendChild(icon);
-      if (settings.showPercent || remaining || charging) {
-        content.appendChild(text);
-      }
-      host.appendChild(content);
+  row.appendChild(icon);
+  if (settings.showPercent || remaining || charging) {
+    row.appendChild(text);
+  }
+  host.appendChild(row);
+}
+
+type WindowWithBatteryDaemon = Window & {
+  __batteryPeekDaemon?: { stop: () => void };
+};
+
+/**
+ * Runs for the whole Steam session after the plugin loads.
+ * Plugin React trees unmount when you back out of Battery Peek or when Decky hides the QAM panel — this keeps the pill over games.
+ */
+function startBatteryOverlayDaemon() {
+  const w = window as WindowWithBatteryDaemon;
+  if (w.__batteryPeekDaemon) return;
+
+  let stopped = false;
+  let timeoutId: number | undefined;
+  let unbindBatteryEvents: (() => void) | undefined;
+
+  const getBatteryManager = async () => {
+    const nav = navigator as NavigatorWithBattery;
+    if (!nav.getBattery) return null;
+    try {
+      return await nav.getBattery();
+    } catch {
+      return null;
+    }
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    const settings = loadSettings();
+    const status = await readBattery();
+    paintOverlayInSteamDom(settings, status);
+
+    timeoutId = window.setTimeout(() => {
+      void tick();
+    }, Math.max(1000, settings.refreshSeconds * 1000));
+  };
+
+  const bindBatteryEvents = async () => {
+    const manager = await getBatteryManager();
+    if (!manager) return;
+
+    const onBatteryEvent = () => {
+      void tick();
     };
 
-    paint();
-    /* Re-find Gamepad UI root when Steam attaches it slightly after boot / resume. */
-    const t = window.setInterval(paint, 1500);
+    manager.addEventListener("chargingchange", onBatteryEvent);
+    manager.addEventListener("levelchange", onBatteryEvent);
+    manager.addEventListener("dischargingtimechange", onBatteryEvent);
 
-    return () => {
-      window.clearInterval(t);
+    unbindBatteryEvents = () => {
+      manager.removeEventListener("chargingchange", onBatteryEvent);
+      manager.removeEventListener("levelchange", onBatteryEvent);
+      manager.removeEventListener("dischargingtimechange", onBatteryEvent);
     };
-  }, [overlayStyle, settings, status]);
+  };
 
-  return null;
+  void bindBatteryEvents();
+  void tick();
+
+  w.__batteryPeekDaemon = {
+    stop: () => {
+      stopped = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+      unbindBatteryEvents?.();
+      removeOverlayNodes();
+      delete w.__batteryPeekDaemon;
+    },
+  };
 }
 
 function Content() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const { status, loading } = useBatteryPoller(settings.enabled);
+  const { status, loading } = useBatteryPoller(settings.enabled, settings.refreshSeconds);
 
   const applySettings = (next: Settings) => {
     setSettings(next);
@@ -287,7 +346,6 @@ function Content() {
 
   return (
     <>
-      <FloatingBatteryOverlay status={status} settings={settings} />
       <PanelSection title="Overlay">
         <PanelSectionRow>
           <ToggleField
@@ -312,6 +370,14 @@ function Content() {
             description="Reduce padding and text size to block even less of the screen."
             onChange={(value: boolean) => applySettings({ ...settings, compactMode: value })}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => applySettings({ ...settings, refreshSeconds: nextRefreshSeconds(settings.refreshSeconds) })}
+          >
+            Refresh rate: {settings.refreshSeconds}s (tap to change)
+          </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
@@ -352,10 +418,12 @@ function Content() {
 }
 
 export default definePlugin(() => {
+  startBatteryOverlayDaemon();
+
   const content = <Content />;
 
   return {
-    /** Without this, Decky unmounts the plugin when Quick Access closes — no in-game overlay. */
+    /** Keeps settings / live status updating when QAM is dismissed but you stay on this plugin. */
     alwaysRender: true,
     name: "Battery Peek",
     titleView: (
@@ -373,7 +441,7 @@ export default definePlugin(() => {
       </span>
     ),
     onDismount() {
-      removeOverlayNodes();
+      (window as WindowWithBatteryDaemon).__batteryPeekDaemon?.stop();
     },
   };
 });
