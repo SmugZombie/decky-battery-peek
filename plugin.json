@@ -1,5 +1,5 @@
 {
-  "name": "Battery Peek",
+  "name": "decky-battery-peek",
   "author": "Ron Egli",
   "flags": ["_root"],
   "api_version": 1,
