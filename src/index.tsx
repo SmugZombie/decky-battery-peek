@@ -1,13 +1,13 @@
+// Must import a binding from @decky/api — Rollup marks the package "pure", so side-effect-only imports are tree-shaken away.
+import { definePlugin } from "@decky/api";
 import {
   ButtonItem,
   PanelSection,
   PanelSectionRow,
   ToggleField,
-  definePlugin,
   staticClasses,
 } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FaBolt } from "react-icons/fa";
 
 type BatteryStatus = {
   percent: number;
@@ -31,7 +31,7 @@ type NavigatorWithBattery = Navigator & {
   }>;
 };
 
-/** Avoid `callable()` / `@decky/api` — those bridge calls surface as TypeError "Failed to fetch" when WS flakes. sysfs is unreadable from JS anyway. */
+/** Map cryptic Chromium errors when Battery API rejects (e.g. Game Mode restrictions). */
 function batteryMessageFallback(raw: string): string {
   if (/failed to fetch/i.test(raw)) {
     return "Battery read blocked in this shell (often a Chromium / Game Mode limitation). Try Desktop Mode or Steam OS Beta updates.";
@@ -338,12 +338,18 @@ export default definePlugin(() => {
     name: "Battery Peek",
     titleView: (
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <FaBolt />
+        <span aria-hidden style={{ fontSize: "1.15em", lineHeight: 1 }}>
+          ⚡
+        </span>
         <span>Battery Peek</span>
       </div>
     ),
     content,
-    icon: <FaBolt />,
+    icon: (
+      <span aria-hidden style={{ fontSize: "1.25em", lineHeight: 1 }}>
+        ⚡
+      </span>
+    ),
     onDismount() {
       const overlay = document.getElementById(OVERLAY_ID);
       if (overlay?.parentElement) {
