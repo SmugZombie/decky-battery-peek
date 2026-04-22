@@ -4,7 +4,19 @@ from pathlib import Path
 
 import decky
 
-BATTERY_BASE = Path("/sys/class/power_supply/BAT1")
+
+def _find_battery_path() -> Path:
+    base = Path("/sys/class/power_supply")
+    if not base.is_dir():
+        return Path("/sys/class/power_supply/BAT1")
+    for p in sorted(base.glob("BAT*")):
+        t = p / "type"
+        if t.is_file() and t.read_text(encoding="utf-8", errors="replace").strip().lower() == "battery":
+            return p
+    for p in (Path("/sys/class/power_supply/BAT1"), Path("/sys/class/power_supply/BAT0")):
+        if p.is_dir():
+            return p
+    return Path("/sys/class/power_supply/BAT1")
 
 
 class Plugin:
@@ -23,12 +35,13 @@ class Plugin:
         Returns a simple battery snapshot directly from Linux power_supply.
         This is more reliable on Steam Deck than depending on browser battery APIs.
         """
+        battery_base = _find_battery_path()
         try:
-            capacity = self._read_int(BATTERY_BASE / "capacity", default=0)
-            status = self._read_text(BATTERY_BASE / "status", default="Unknown")
-            energy_now = self._read_int(BATTERY_BASE / "energy_now", default=0)
-            energy_full = self._read_int(BATTERY_BASE / "energy_full", default=0)
-            power_now = self._read_int(BATTERY_BASE / "power_now", default=0)
+            capacity = self._read_int(battery_base / "capacity", default=0)
+            status = self._read_text(battery_base / "status", default="Unknown")
+            energy_now = self._read_int(battery_base / "energy_now", default=0)
+            energy_full = self._read_int(battery_base / "energy_full", default=0)
+            power_now = self._read_int(battery_base / "power_now", default=0)
 
             minutes_remaining = None
             if power_now > 0 and energy_now > 0 and status.lower() == "discharging":

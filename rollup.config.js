@@ -1,5 +1,8 @@
 import deckyPlugin from "@decky/rollup";
 
 export default deckyPlugin({
-  // Add extra Rollup options here if you want to expand the plugin later.
+  // One file under dist/ avoids extra dynamic chunk fetches from 127.0.0.1 (seen as Failed to fetch).
+  output: {
+    inlineDynamicImports: true,
+  },
 });

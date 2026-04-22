@@ -8,7 +8,7 @@ import {
 } from "@decky/ui";
 import { callable } from "@decky/api";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FaBatteryEmpty, FaBatteryFull, FaBolt } from "react-icons/fa";
+import { FaBolt } from "react-icons/fa";
 
 type BatteryStatus = {
   percent: number;
@@ -22,6 +22,58 @@ type BatteryStatus = {
 };
 
 const getBatteryStatus = callable<[], BatteryStatus>("get_battery_status");
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Deck UI sometimes flakes on the WS bridge; navigator path avoids sysfs but keeps the overlay usable. */
+async function snapshotFromNavigator(): Promise<BatteryStatus | null> {
+  const nav = navigator as Navigator & {
+    getBattery?: () => Promise<{
+      level: number;
+      charging: boolean;
+      chargingTime: number;
+      dischargingTime: number;
+    }>;
+  };
+  if (!nav.getBattery) return null;
+  try {
+    const bm = await nav.getBattery();
+    const percent = Math.max(0, Math.min(100, Math.round(bm.level * 100)));
+    const charging = bm.charging;
+    let minutesRemaining: number | null = null;
+    if (!charging && Number.isFinite(bm.dischargingTime) && bm.dischargingTime !== Number.POSITIVE_INFINITY) {
+      minutesRemaining = Math.max(0, Math.round(bm.dischargingTime / 60));
+    }
+    return {
+      percent,
+      status: charging ? "Charging" : "Discharging",
+      isCharging: charging,
+      energyNow: 0,
+      energyFull: 0,
+      powerNow: 0,
+      minutesRemaining,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getBatterySnapshot(): Promise<BatteryStatus> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await getBatteryStatus();
+    } catch (e) {
+      lastError = e;
+      if (attempt < 2) await sleep(250 * (attempt + 1));
+    }
+  }
+  const fromNav = await snapshotFromNavigator();
+  if (fromNav) return fromNav;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 
 const OVERLAY_ID = "battery-peek-overlay";
 const STORAGE_KEY = "battery-peek-settings";
@@ -75,7 +127,7 @@ function useBatteryPoller(enabled: boolean) {
 
     const refresh = async () => {
       try {
-        const next = await getBatteryStatus();
+        const next = await getBatterySnapshot();
         if (!cancelled) {
           setStatus(next);
           setLoading(false);
@@ -212,12 +264,6 @@ function Content() {
     setSettings(next);
     saveSettings(next);
   };
-
-  const icon = useMemo(() => {
-    const percent = status?.percent ?? 0;
-    if (percent < 15) return <FaBatteryEmpty />;
-    return <FaBatteryFull />;
-  }, [status?.percent]);
 
   return (
     <>
